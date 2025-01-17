@@ -13,6 +13,8 @@ bg_color_clear = "#242224"
 
 # Detect the operating system
 is_nt = os.name == "nt"
+is_linux = platform.system() == "Linux"
+is_macos = platform.system() == "Darwin"
 os_type = platform.system()
 
 if is_nt:

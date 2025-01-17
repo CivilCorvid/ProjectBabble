@@ -6,13 +6,17 @@ import serial
 import serial.tools.list_ports
 import threading
 import time
+import platform
 from lang_manager import LocaleStringManager as lang
 
 from colorama import Fore
 from config import BabbleConfig, BabbleSettingsConfig
-from utils.misc_utils import get_camera_index_by_name, list_camera_names
+from utils.misc_utils import get_camera_index_by_name, list_camera_names, is_nt, is_linux
 from enum import Enum
 import sys
+
+if is_nt or is_linux:
+    from vivefacialtracker.camera_controller import FTCameraController
 
 WAIT_TIME = 0.1
 BUFFER_SIZE = 32768
@@ -54,6 +58,7 @@ class Camera:
         self.cancellation_event = cancellation_event
         self.current_capture_source = config.capture_source
         self.cv2_camera: "cv2.VideoCapture" = None
+        self.vft_camera: FTCameraController = None
 
         self.serial_connection = None
         self.last_frame_time = time.time()
@@ -78,6 +83,9 @@ class Camera:
                 print(
                     f'{Fore.CYAN}[{lang._instance.get_string("log.info")}] {lang._instance.get_string("info.exitCaptureThread")}{Fore.RESET}'
                 )
+                if self.vft_camera is not None:
+                    self.vft_camera.close()
+                    self.vft_camera = None
                 return
             should_push = True
             # If things aren't open, retry until they are. Don't let read requests come in any earlier
@@ -95,6 +103,22 @@ class Camera:
                         port = self.config.capture_source
                         self.current_capture_source = port
                         self.start_serial_connection(port)
+                elif str(self.config.capture_source).startswith("VFT"):
+                    if self.vft_camera is None\
+                            or self.config.capture_source != self.current_capture_source:
+                        print(self.error_message.format(self.config.capture_source))
+                        if self.cancellation_event.wait(WAIT_TIME):
+                            return
+                        try:
+                            if is_nt or is_linux:
+                                self.vft_camera = FTCameraController(int(str(self.config.capture_source)[3:]))
+                                self.vft_camera.open()
+                                should_push = False
+                        except Exception:
+                            print(traceback.format_exc())
+                            if self.vft_camera is not None:
+                                self.vft_camera.close()
+                            self.vft_camera = None
                 else:
                     if (
                         self.cv2_camera is None
@@ -163,11 +187,17 @@ class Camera:
     def get_cv2_camera_picture(self, should_push):
         try:
             ret, image = self.cv2_camera.read()
-            if not ret:
-                self.cv2_camera.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                raise RuntimeError(lang._instance.get_string("error.frame"))
-            self.FRAME_SIZE = image.shape
-            frame_number = self.cv2_camera.get(cv2.CAP_PROP_POS_FRAMES)
+            if self.vft_camera is not None:
+                image = self.vft_camera.get_image()
+                if image is None:
+                    return
+                frame_number = self.frame_number
+            else:
+                ret, image = self.cv2_camera.read()
+                if not ret:
+                    self.cv2_camera.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    raise RuntimeError("Problem while getting frame")
+                frame_number = self.cv2_camera.get(cv2.CAP_PROP_POS_FRAMES)
             # Calculate FPS
             current_frame_time = time.time()    # Should be using "time.perf_counter()", not worth ~3x cycles?
             delta_time = current_frame_time - self.last_frame_time
@@ -244,6 +274,7 @@ class Camera:
                     self.buffer = b""
 
         except Exception:
+            FTCameraController._logger.exception("get_image")
             print(
                 f'{Fore.YELLOW}[{lang._instance.get_string("log.warn")}] {lang._instance.get_string("info.serialCapture")}{Fore.RESET}'
             )

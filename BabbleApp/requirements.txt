@@ -12,4 +12,6 @@ colorama==0.4.6
 winotify==1.1.0
 comtypes==1.4.8
 pygrabber==0.2
+psutil==6.1.1
+v4l2py==0.20.0
 poetry
